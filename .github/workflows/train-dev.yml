@@ -51,7 +51,7 @@ jobs:
           echo "resource_group=$RG_NAME" >> "$GITHUB_OUTPUT"
           echo "workspace=$WS_NAME" >> "$GITHUB_OUTPUT"
 
-      - name: Run training job in dev and capture logs
+      - name: Run training job in dev
         id: train
         env:
           AZURE_CORE_COLLECT_TELEMETRY: "false"
@@ -62,19 +62,47 @@ jobs:
             -f src/job.yml \
             --name "$JOB_NAME" \
             --set inputs.training_data.path=azureml:diabetes-dev-folder@latest \
-            --stream \
-            --debug | tee training_output.log
+            --query name -o tsv
+
+          echo "job_name=$JOB_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for dev training job to complete
+        run: |
+          JOB_NAME="${{ steps.train.outputs.job_name }}"
+          echo "Waiting for job $JOB_NAME to complete..."
+          
+          STATUS="Running"
+          while [[ "$STATUS" != "Completed" && "$STATUS" != "Failed" && "$STATUS" != "Canceled" ]]; do
+            sleep 30
+            STATUS=$(az ml job show --name "$JOB_NAME" --query status -o tsv)
+            echo "Current job status: $STATUS"
+          done
+          
+          if [ "$STATUS" != "Completed" ]; then
+            echo "Job did not complete successfully. Final status: $STATUS"
+            exit 1
+          fi
+
+      - name: Download dev training logs
+        run: |
+          JOB_NAME="${{ steps.train.outputs.job_name }}"
+          mkdir -p downloaded-logs
+          # Download only the system logs and user outputs, skipping large model artifacts
+          az ml job download --name "$JOB_NAME" --download-path downloaded-logs
 
       - name: Extract dev metrics from logs
         id: parse-metrics
         run: |
-          if [ ! -f training_output.log ]; then
-            echo "No training_output.log found to parse metrics." >&2
+          # Azure ML automatically saves your Python script's console output to std_log.txt
+          LOG_FILE=$(find downloaded-logs -name std_log.txt | head -n 1)
+          
+          if [ -z "$LOG_FILE" ]; then
+            echo "No std_log.txt found to parse metrics." >&2
             exit 1
           fi
 
-          ACC=$(grep -o "Accuracy: .*" training_output.log | tail -n 1 | awk '{print $2}') || true
-          AUC=$(grep -o "AUC: .*" training_output.log | tail -n 1 | awk '{print $2}') || true
+          ACC=$(grep -o "Accuracy: .*" "$LOG_FILE" | tail -n 1 | awk '{print $2}') || true
+          AUC=$(grep -o "AUC: .*" "$LOG_FILE" | tail -n 1 | awk '{print $2}') || true
 
           echo "Dev accuracy: $ACC"
           echo "Dev AUC: $AUC"
