@@ -53,6 +53,8 @@ jobs:
 
       - name: Run training job in dev and capture logs
         id: train
+        env:
+          AZURE_CORE_COLLECT_TELEMETRY: "false"
         run: |
           JOB_NAME="diabetes-train-dev-${{ github.run_id }}"
           echo "Running Azure ML job: $JOB_NAME"
